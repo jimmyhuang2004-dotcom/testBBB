@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teachable Machine 遊戲診斷與測試</title>
+  
+  <!-- 載入 TensorFlow.js 與 Teachable Machine 函式庫 -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.20.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8.6/dist/teachablemachine-image.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8.6/dist/teachablemachine-pose.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #121212;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin: 0;
+      padding: 20px;
+    }
+
+    h1 { color: #00fff5; margin-bottom: 8px; text-align: center; }
+    .model-url-tag { font-size: 14px; color: #aaa; margin-bottom: 20px; word-break: break-all; }
+
+    /* 診斷訊息面板 */
+    #diag-panel {
+      width: 100%;
+      max-width: 800px;
+      background-color: #1e1e2e;
+      border: 2px solid #333;
+      border-radius: 10px;
+      padding: 15px;
+      margin-bottom: 20px;
+    }
+
+    .status-item {
+      margin: 6px 0;
+      font-size: 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .badge {
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .badge-pending { background-color: #777; color: white; }
+    .badge-ok { background-color: #2ed573; color: white; }
+    .badge-err { background-color: #ff4757; color: white; }
+
+    #error-box {
+      display: none;
+      background-color: #3d0d0d;
+      border: 2px solid #ff4757;
+      color: #ff6b6b;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 10px;
+      font-size: 14px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    /* 控制按鈕 */
+    .start-btn {
+      background-color: #00fff5;
+      color: #000;
+      border: none;
+      padding: 15px 40px;
+      font-size: 18px;
+      font-weight: bold;
+      border-radius: 30px;
+      cursor: pointer;
+      box-shadow: 0 0 15px rgba(0, 255, 245, 0.4);
+      transition: all 0.2s ease;
+      margin-bottom: 20px;
+    }
+
+    .start-btn:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 25px rgba(0, 255, 245, 0.7);
+    }
+
+    .start-btn:disabled {
+      background-color: #444;
+      color: #888;
+      box-shadow: none;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    /* 主要畫面區域 */
+    .main-layout {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+      width: 100%;
+      max-width: 900px;
+    }
+
+    .card {
+      background-color: #1e1e2e;
+      border-radius: 12px;
+      padding: 15px;
+      flex: 1;
+      min-width: 300px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    #webcam-container {
+      width: 300px;
+      height: 300px;
+      background-color: #000;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    #webcam-container canvas {
+      width: 100% !important;
+      height: 100% !important;
+      object-fit: cover;
+    }
+
+    #gameCanvas {
+      background-color: #050510;
+      border-radius: 8px;
+      border: 2px solid #00fff5;
+    }
+
+    /* 分數顯示列表 */
+    #predictions {
+      width: 100%;
+      margin-top: 15px;
+    }
+    .pred-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 6px 0;
+      background-color: rgba(255, 255, 255, 0.05);
+      padding: 6px 10px;
+      border-radius: 6px;
+    }
+    .bar-bg {
+      width: 100px;
+      height: 8px;
+      background-color: #333;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .bar-fill {
+      height: 100%;
+      background-color: #00fff5;
+      width: 0%;
+      transition: width 0.1s;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>🎮 AI 互動遊戲 (帶自動檢測)</h1>
+  <div class="model-url-tag">目標模型：https://teachablemachine.withgoogle.com/models/QwQTQkbwU/</div>
+
+  <!-- 狀態診斷面板 -->
+  <div id="diag-panel">
+    <div class="status-item">
+      <span id="env-badge" class="badge badge-pending">檢查中</span>
+      <span id="env-msg">正在檢查執行環境 (HTTPS / Localhost)...</span>
+    </div>
+    <div class="status-item">
+      <span id="lib-badge" class="badge badge-pending">檢查中</span>
+      <span id="lib-msg">正在確認 TensorFlow.js 函式庫載入狀態...</span>
+    </div>
+    <div class="status-item">
+      <span id="cam-badge" class="badge badge-pending">等待點擊</span>
+      <span id="cam-msg">點擊下方按鈕啟動攝影機與 AI 模型</span>
+    </div>
+
+    <div id="error-box"></div>
+  </div>
+
+  <button id="startBtn" class="start-btn" onclick="startApp()">🚀 點此啟動攝影機與遊戲</button>
+
+  <div class="main-layout">
+    <!-- 左側：鏡頭與辨識分數 -->
+    <div class="card">
+      <h3>📷 攝影機辨識畫面</h3>
+      <div id="webcam-container"></div>
+      <div id="predictions"></div>
+    </div>
+
+    <!-- 右側：遊戲主畫面 -->
+    <div class="card">
+      <h3>🎯 遊戲互動畫面</h3>
+      <canvas id="gameCanvas" width="320" height="320"></canvas>
+    </div>
+  </div>
+
+  <script>
+    const MODEL_URL = "https://teachablemachine.withgoogle.com/models/QwQTQkbwU/";
+    let model, webcam, maxPredictions, detectedType = "image";
+    let topClass = "", topScore = 0;
+    let isRunning = false;
+
+    // 捕獲全域 JavaScript 錯誤直接顯示在畫面上
+    window.onerror = function(msg, url, lineNo, columnNo, error) {
+      showError(`[全域 JavaScript 錯誤]\n訊息: ${msg}\n行數: ${lineNo}`);
+      return false;
+    };
+
+    function showError(msg) {
+      const box = document.getElementById("error-box");
+      box.style.display = "block";
+      box.innerText = msg;
+    }
+
+    // 1. 初始化環境檢查
+    window.addEventListener("DOMContentLoaded", () => {
+      // 檢查環境安全性
+      const isSecure = window.isSecureContext || location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1";
+      const envBadge = document.getElementById("env-badge");
+      const envMsg = document.getElementById("env-msg");
+
+      if (isSecure) {
+        envBadge.className = "badge badge-ok";
+        envBadge.innerText = "正常";
+        envMsg.innerText = "執行環境正常 (已啟用安全上下文)";
+      } else {
+        envBadge.className = "badge badge-err";
+        envBadge.innerText = "警告";
+        envMsg.innerText = "注意：直接開啟點擊 HTML 檔 (file://) 可能會被瀏覽器阻擋鏡頭權限！建議使用 Live Server 或 HTTPS。";
+      }
+
+      // 檢查 TFJS 載入狀態
+      const libBadge = document.getElementById("lib-badge");
+      const libMsg = document.getElementById("lib-msg");
+
+      if (typeof tf !== 'undefined' && (typeof tmImage !== 'undefined' || typeof tmPose !== 'undefined')) {
+        libBadge.className = "badge badge-ok";
+        libBadge.innerText = "成功";
+        libMsg.innerText = "TensorFlow.js & Teachable Machine 函式庫載入成功！";
+      } else {
+        libBadge.className = "badge badge-err";
+        libBadge.innerText = "失敗";
+        libMsg.innerText = "無法載入 AI 函式庫，請檢查網路連接或是否有廣告攔截器阻擋 CDN。";
+        document.getElementById("startBtn").disabled = true;
+      }
+    });
+
+    // 2. 主啟動流程
+    async function startApp() {
+      const btn = document.getElementById("startBtn");
+      const camBadge = document.getElementById("cam-badge");
+      const camMsg = document.getElementById("cam-msg");
+
+      btn.disabled = true;
+      camBadge.className = "badge badge-pending";
+      camBadge.innerText = "連線中";
+      camMsg.innerText = "正在嘗試下載模型設定檔並請求攝影機權限...";
+
+      try {
+        // 步驟 A: 先讀取 model.json 確認模型類別 (Image 或 Pose)
+        const response = await fetch(MODEL_URL + "model.json");
+        if (!response.ok) {
+          throw new Error(`無法存取模型檔案 (${response.status} ${response.statusText})。請確認 Teachable Machine 模型網址是否正確。`);
+        }
+        const modelMetaData = await response.json();
+        
+        // 判斷模型類型
+        if (modelMetaData.userDefinedMetadata && modelMetaData.userDefinedMetadata.type === "pose") {
+          detectedType = "pose";
+          model = await tmPose.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
+        } else {
+          detectedType = "image";
+          model = await tmImage.load(MODEL_URL + "model.json", MODEL_URL + "metadata.json");
+        }
+
+        maxPredictions = model.getTotalClasses();
+
+        // 步驟 B: 初始化攝影機
+        const flip = true;
+        if (detectedType === "pose") {
+          webcam = new tmPose.Webcam(300, 300, flip);
+        } else {
+          webcam = new tmImage.Webcam(300, 300, flip);
+        }
+
+        await webcam.setup(); // 請求攝影機權限
+        await webcam.play();
+
+        // 將攝影機 Canvas 放入 DOM
+        const webcamContainer = document.getElementById("webcam-container");
+        webcamContainer.innerHTML = "";
+        webcamContainer.appendChild(webcam.canvas);
+
+        // 建立預測數值 UI
+        const predContainer = document.getElementById("predictions");
+        predContainer.innerHTML = "";
+        for (let i = 0; i < maxPredictions; i++) {
+          predContainer.innerHTML += `
+            <div class="pred-row">
+              <span id="label-${i}">類別 ${i+1}</span>
+              <div class="bar-bg"><div id="bar-${i}" class="bar-fill"></div></div>
+              <span id="score-${i}">0%</span>
+            </div>
+          `;
+        }
+
+        camBadge.className = "badge badge-ok";
+        camBadge.innerText = "運行中";
+        camMsg.innerText = `模型載入成功！(類型: ${detectedType.toUpperCase()})`;
+        btn.style.display = "none";
+
+        isRunning = true;
+        window.requestAnimationFrame(loop);
+
+      } catch (err) {
+        console.error(err);
+        camBadge.className = "badge badge-err";
+        camBadge.innerText = "錯誤";
+        camMsg.innerText = "啟動失敗，請查看下方錯誤原因：";
+        showError(`啟動過程發生錯誤：\n${err.name}: ${err.message}\n\n常見原因：\n1. 未允許瀏覽器存取攝影機權限。\n2. 攝影機被其他程式（如 Zoom, Teams）占用中。\n3. 本地 file:// 協定阻擋了網絡請求，請嘗試改用 VS Code Live Server。`);
+        btn.disabled = false;
+      }
+    }
+
+    // 3. 逐格預測與渲染
+    async function loop() {
+      webcam.update();
+      await predict();
+      if (isRunning) {
+        drawGame();
+      }
+      window.requestAnimationFrame(loop);
+    }
+
+    async function predict() {
+      let prediction;
+      if (detectedType === "pose") {
+        const { pose, posenetOutput } = await model.estimatePose(webcam.canvas);
+        prediction = await model.predict(posenetOutput);
+        if (pose) {
+          const ctx = webcam.canvas.getContext("2d");
+          ctx.drawImage(webcam.canvas, 0, 0);
+          tmPose.drawKeypoints(pose.keypoints, 0.5, ctx);
+          tmPose.drawSkeleton(pose.keypoints, 0.5, ctx);
+        }
+      } else {
+        prediction = await model.predict(webcam.canvas);
+      }
+
+      let highest = 0;
+      let topName = "";
+
+      for (let i = 0; i < maxPredictions; i++) {
+        const name = prediction[i].className;
+        const prob = prediction[i].probability;
+        const percent = (prob * 100).toFixed(0);
+
+        document.getElementById(`label-${i}`).innerText = name;
+        document.getElementById(`bar-${i}`).style.width = percent + "%";
+        document.getElementById(`score-${i}`).innerText = percent + "%";
+
+        if (prob > highest) {
+          highest = prob;
+          topName = name;
+        }
+      }
+
+      topClass = topName;
+      topScore = highest;
+    }
+
+    // 4. 遊戲繪製畫面
+    const gameCanvas = document.getElementById("gameCanvas");
+    const gameCtx = gameCanvas.getContext("2d");
+    let rotAngle = 0;
+
+    function drawGame() {
+      rotAngle += 0.03;
+      gameCtx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+
+      // 動態背景色彩（根據不同辨識結果呈現不同顏色）
+      let bgHue = 200;
+      if (topClass) {
+        let sum = 0;
+        for (let i = 0; i < topClass.length; i++) sum += topClass.charCodeAt(i);
+        bgHue = sum % 360;
+      }
+
+      gameCtx.fillStyle = `hsl(${bgHue}, 50%, 12%)`;
+      gameCtx.fillRect(0, 0, gameCanvas.width, gameCanvas.height);
+
+      // 遊戲動畫中心光圈
+      const cx = gameCanvas.width / 2;
+      const cy = gameCanvas.height / 2;
+
+      gameCtx.save();
+      gameCtx.translate(cx, cy);
+      gameCtx.rotate(rotAngle);
+
+      gameCtx.strokeStyle = `hsl(${bgHue}, 100%, 60%)`;
+      gameCtx.lineWidth = 4;
+      gameCtx.strokeRect(-40, -40, 80, 80);
+
+      gameCtx.strokeStyle = "#ffffff";
+      gameCtx.lineWidth = 2;
+      gameCtx.beginPath();
+      gameCtx.arc(0, 0, 60, 0, Math.PI * 2);
+      gameCtx.stroke();
+
+      gameCtx.restore();
+
+      // 文字資訊
+      gameCtx.fillStyle = "#ffffff";
+      gameCtx.font = "16px sans-serif";
+      gameCtx.textAlign = "center";
+      gameCtx.fillText("目前觸發狀態：", cx, cy - 80);
+
+      gameCtx.fillStyle = `hsl(${bgHue}, 100%, 70%)`;
+      gameCtx.font = "bold 22px sans-serif";
+      gameCtx.fillText(topClass || "等待辨識中...", cx, cy + 95);
+
+      gameCtx.fillStyle = "#aaa";
+      gameCtx.font = "12px sans-serif";
+      gameCtx.fillText(`信心度: ${(topScore * 100).toFixed(1)}%`, cx, cy + 118);
+    }
+  </script>
+</body>
+</html>
